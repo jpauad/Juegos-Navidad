@@ -90,6 +90,8 @@ details{margin:8px 0} summary{cursor:pointer;font-weight:700;color:var(--gold)}
 .ave{line-height:1;vertical-align:middle}
 .emo{font-size:1.8em;padding:.25em;margin:3px;background:var(--card2)}
 .emo.sel{background:var(--gold)}
+#subs{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);max-width:min(900px,92vw);background:rgba(0,0,0,.82);color:#fff;font-size:clamp(1rem,2.2vw,1.5rem);font-weight:700;padding:10px 18px;border-radius:14px;z-index:80;opacity:0;transition:opacity .4s;pointer-events:none;text-align:center}
+body.demo .top{background:#5c1f1c}
 .snow{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}
 .snow i{position:absolute;top:-10px;color:#fff;opacity:.5;animation:fall linear infinite}
 @keyframes fall{to{transform:translateY(110vh)}}
@@ -2454,7 +2456,8 @@ const DEF={code:null,players:[],points:{},devmap:{},screen:'lobby',used:{q:[],p:
 let S=Object.assign({},DEF,store.get('cg_host',{}));
 const conns={}; const lastView={}; let globalView={v:'wait',msg:'Mira la pantalla 📺'};
 let peer=null, peerState='Conectando…', modalAfter=null, retries=0;
-const save=()=>store.set('cg_host',S);
+const DEMO={on:false,stop:false,real:null};
+const save=()=>{if(!DEMO.on)store.set('cg_host',S)};
 const P=pid=>S.players.find(p=>p.pid===pid);
 const nm=pid=>(P(pid)||{}).name||'¿?';
 const online=pid=>!!conns[pid];
@@ -2462,6 +2465,158 @@ const addPts=(pid,n)=>{S.points[pid]=(S.points[pid]||0)+n};
 const newCode=()=>{const L='ABCDEFGHJKMNPQRSTUVWXYZ23456789';let c='';for(let i=0;i<4;i++)c+=L[Math.floor(Math.random()*L.length)];return c};
 if(!S.code){S.code=newCode();save()}
 const joinURL=()=>location.origin+location.pathname+location.search+'#join='+S.code;
+
+/* ================= RELATOR (voz) y EFECTOS ================= */
+const VO={on:store.get('cg_vo',true),sfx:store.get('cg_sfx',true),voice:null,pending:0,mute:false};
+const hasTTS='speechSynthesis' in window;
+function pickVoice(){if(!hasTTS)return null;const vs=speechSynthesis.getVoices();const norm=l=>(l||'').replace('_','-').toLowerCase();
+  for(const l of ['es-cl','es-419','es-us','es-mx','es-ar','es-co','es-es']){const c=vs.filter(v=>norm(v.lang)===l);const v=c.find(v=>/natural|online|google|neural/i.test(v.name))||c[0];if(v)return v}
+  return vs.find(v=>/^es/i.test(v.lang))||null}
+if(hasTTS){VO.voice=pickVoice();speechSynthesis.onvoiceschanged=()=>{VO.voice=pickVoice()}}
+const clean=t=>String(t).replace(/\p{Extended_Pictographic}|️|‍/gu,'').replace(/#(\d+)/g,'número $1').replace(/_{2,}/g,'blanco').replace(/\s+/g,' ').trim();
+let sayQ=Promise.resolve();
+function say(text,delay){
+  text=clean(text);if(!text||VO.mute)return Promise.resolve();
+  VO.pending++;
+  const p=sayQ.then(()=>new Promise(res=>{
+    let done=false;const fin=()=>{if(done)return;done=true;res()};
+    const start=()=>{showSub(text);
+      if(!VO.on||!hasTTS){setTimeout(fin,Math.min(9000,1200+text.length*55));return}
+      const parts=text.match(/[^.!?]*[.!?]+|[^.!?]+$/g)||[text];let left=parts.length;
+      parts.forEach(pt=>{const u=new SpeechSynthesisUtterance(pt.trim());if(VO.voice){u.voice=VO.voice;u.lang=VO.voice.lang}else u.lang='es-CL';u.rate=1.05;u.pitch=1.02;u.onend=u.onerror=()=>{if(--left<=0)fin()};speechSynthesis.speak(u)});
+      setTimeout(fin,4000+text.length*120)};
+    delay?setTimeout(start,delay):start();
+  })).then(()=>{VO.pending--});
+  sayQ=p.catch(()=>{});return p}
+function hush(){if(hasTTS)speechSynthesis.cancel();sayQ=Promise.resolve();VO.pending=0}
+let subT=null;
+function showSub(t){let s=document.getElementById('subs');if(!s){s=document.createElement('div');s.id='subs';document.body.appendChild(s)}
+  if(!(DEMO.on||VO.on))return;s.textContent='🎙️ '+t;s.style.opacity=1;clearTimeout(subT);subT=setTimeout(()=>{s.style.opacity=0},Math.max(3500,t.length*80))}
+/* --- efectos con WebAudio --- */
+let AC=null;
+const ac=()=>{if(!AC){try{AC=new (window.AudioContext||window.webkitAudioContext)()}catch(e){}}if(AC&&AC.state==='suspended')AC.resume();return AC};
+document.addEventListener('pointerdown',()=>ac(),{capture:true});
+function tone(f,d,type,vol,when,f2){const a=ac();if(!a||!VO.sfx)return;const t=a.currentTime+(when||0);const o=a.createOscillator(),g=a.createGain();o.type=type||'sine';o.frequency.setValueAtTime(f,t);if(f2)o.frequency.exponentialRampToValueAtTime(f2,t+d);
+  g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(vol||.2,t+.01);g.gain.exponentialRampToValueAtTime(0.0001,t+d);o.connect(g).connect(a.destination);o.start(t);o.stop(t+d+.05)}
+function noise(d,vol,when,ftype,freq,q){const a=ac();if(!a||!VO.sfx)return;const t=a.currentTime+(when||0);const n=Math.floor(a.sampleRate*d);const buf=a.createBuffer(1,n,a.sampleRate);const ch=buf.getChannelData(0);for(let i=0;i<n;i++)ch[i]=Math.random()*2-1;
+  const s=a.createBufferSource();s.buffer=buf;const f=a.createBiquadFilter();f.type=ftype||'lowpass';f.frequency.value=freq||1000;f.Q.value=q||.7;const g=a.createGain();g.gain.setValueAtTime(vol||.2,t);g.gain.exponentialRampToValueAtTime(0.0001,t+d);s.connect(f).connect(g).connect(a.destination);s.start(t)}
+const SFX={
+  tick(){tone(1500,.03,'square',.06)},
+  pop(){tone(380,.18,'sine',.25,0,900);tone(900,.12,'triangle',.12,.08,1400)},
+  whoosh(){noise(.5,.25,0,'bandpass',900,2);tone(300,.4,'sawtooth',.05,0,1200)},
+  drum(sec){sec=sec||1.5;const n=Math.floor(sec*22);for(let i=0;i<n;i++)noise(.06,.05+.25*i/n,i/22,'lowpass',380);noise(1.2,.35,sec,'highpass',5000);tone(110,.4,'sine',.4,sec)},
+  fanfare(){[523,659,784,1047].forEach((f,i)=>tone(f,i===3?.7:.18,'triangle',.22,i*.14));[659,784,1047].forEach(f=>tone(f,.8,'square',.04,.56))},
+  buzzer(){tone(150,.7,'sawtooth',.18);tone(155,.7,'square',.08)},
+  applause(sec){sec=sec||2.5;for(let i=0;i<sec*45;i++)noise(.03,.05+Math.random()*.1,Math.random()*sec,'bandpass',1500+Math.random()*2000,1.5)},
+  chime(){[1319,1568,2093].forEach((f,i)=>tone(f,.5,'sine',.12,i*.09))},
+  wheel(){let t=0,dt=.035;while(t<4.1){tone(1700,.025,'square',.05,t);t+=dt;dt*=1.075}}
+};
+/* --- narración de estados --- */
+let lastSig=null,lastLog=0,lastTimerEnd=0,lastSecTick=0;
+const N=pid=>nm(pid);
+function chalRules(c){const T=N(c.thief),V=N(c.victim);
+  return {imita:`Imitación. ${T}, mira tu celular: tienes que imitar lo que te tocó, sin decir el nombre. Tienen sesenta segundos para adivinar.`,
+  mimica:`Mímica. ${T}, actúa sin hablar ni hacer ruidos. La mesa tiene que adivinar dos palabras en sesenta segundos.`,
+  dos:c.stmts?`Dos verdades y una mentira. Escuchen las frases de ${T}. Frase uno: ${c.stmts[0]}. Frase dos: ${c.stmts[1]}. Frase tres: ${c.stmts[2]}. ¿Cuál es la mentira? Voten en el celular. ${T} gana si la mayoría no la descubre.`:`Dos verdades y una mentira. ${T}, cuéntanos tres cosas de tu vida: dos verdaderas y una mentira. Los demás votan en el celular cuál es la mentira.`,
+  absurdas:`Duelo de respuestas absurdas. ${T} y ${V}, completen la frase en su celular: ${c.prompt}. Después la mesa vota la más chistosa.`,
+  quien:`Duelo. ¿Quién es más probable que ${c.prompt}? Voten entre ${T} y ${V}. ¡El más votado se lleva el regalo!`,
+  ruleta:`Ruleta del castigo. ${T}, gira la ruleta y cumple el castigo. La mesa decide si lo hizo bien.`}[c.game]||''}
+function narrate(){
+  const sig=JSON.stringify([S.screen,S.asr&&[S.asr.phase,S.asr.round,S.asr.actor,!!S.asr.pending,S.asr.chal&&[S.asr.chal.stage,S.asr.chal.game],S.asr.log&&S.asr.log.length],S.g&&[S.g.key,S.g.phase,S.g.prompt,S.g.imitator]]);
+  if(lastSig===null){lastSig=sig;lastLog=S.asr&&S.asr.log?S.asr.log.length:0;return}
+  if(sig===lastSig)return; lastSig=sig;
+  if(S.screen==='asr'&&S.asr&&S.asr.log)narrASR();else narrGame();
+}
+function narrASR(){
+  const R=S.asr; if(R.phase==='setup'){lastLog=0;return}
+  if(R.log.length<lastLog)lastLog=R.log.length;
+  const fresh=R.log.slice(lastLog);lastLog=R.log.length;
+  const lines=[];
+  fresh.forEach(l=>{
+    if(/^Orden:/.test(l)){lines.push('¡Comienza el Gran Juego! El orden quedó así: '+l.replace('Orden: ','')+'.');lines.push('Primera vuelta, libre: en tu turno abres un regalo nuevo o robas uno ya abierto. Si abres uno y no te gusta, lo puedes cambiar. Un regalo robado '+R.max+' veces queda congelado.');return}
+    if(/abrió el/.test(l)){SFX.pop();lines.push('¡'+l+'!');return}
+    if(/le robó|cambió el|cambió su/.test(l)){SFX.whoosh();lines.push('¡'+l.replace(' (🔒 congelado)','')+'!'+(/congelado/.test(l)?' ¡Y ese regalo queda congelado!':''));return}
+    if(/ganó el desafío|perdió el desafío/.test(l))return;
+    if(/Empieza la vuelta|¡Empieza la vuelta|vuelta 2 con desafíos/i.test(l)){SFX.chime();const r=R.round;lines.push(`¡Vuelta ${r}, con desafíos! Ahora, en el mismo orden, cada uno puede intentar quedarse con otro regalo, pero solo si gana un desafío. Si pierde, se queda con el suyo.`);return}
+    if(/Fin/.test(l))return;
+    lines.push(l);
+  });
+  const c=R.chal;
+  if(R.phase==='done'){SFX.fanfare();lines.push('¡Terminó el Gran Juego! Miren con qué regalo quedó cada uno. ¡Feliz Navidad, Comando Garra!')}
+  else if(c){
+    if(c.stage==='pick')lines.push(`¡Desafío! ${N(c.thief)} quiere el regalo número ${c.gi+1}, que tiene ${N(c.victim)}. ¡Sorteemos el desafío!`);
+    else if(c.stage==='result'){if(c.pass){SFX.fanfare();lines.push(`¡${N(c.thief)} ganó el desafío y se lleva el regalo número ${c.gi+1}!`)}else{SFX.buzzer();lines.push(`¡Uy! ${N(c.thief)} no lo logró, y se queda con el suyo.`)}}
+    else if(c.game&&(c.stage==='ready'||c.stage==='vote'||c.stage==='write'||c.stage==='go')&&!c._told){c._told=1;lines.push(chalRules(c))}
+  }
+  else if(R.phase==='play'){
+    if(R.pending)lines.push(`${N(R.actor)}, ¿te lo quedas, o lo cambias por uno ya abierto?`);
+    else if(R.actor!==R.order[R.turnIdx])lines.push(`${N(R.actor)}, te robaron: abre un regalo nuevo o roba otro. No puedes recuperar el que te quitaron.`);
+    else lines.push(`Turno de ${N(R.actor)}: abre un regalo nuevo, o roba uno ya abierto.`);
+  }
+  else if(R.phase==='final')lines.push(`Turno de ${N(R.actor)}: ¿desafías a alguien por su regalo, o te quedas con el tuyo?`);
+  lines.forEach(l=>say(l));
+}
+function narrGame(){
+  const g=S.g||{};const sc=S.screen;
+  if(sc==='quien'){if(g.phase==='ask')say('¿Quién es más probable que '+g.prompt+'?');else if(g.phase==='vote')say('¡Voten en su celular!');
+    else if(g.phase==='reveal'){const c=countVotes(g);const max=Math.max(0,...Object.values(c));const top=Object.keys(c).filter(k=>c[k]===max&&max);SFX.drum(1.4);say(top.length?'¡El más votado es '+top.map(N).join(' y ')+'!':'Nadie votó.',1600).then(()=>{});setTimeout(()=>SFX.fanfare(),1500)}}
+  else if(sc==='dos'){if(g.phase==='vote')say(g.stmts?`Escuchen a ${N(g.teller)}. Frase uno: ${g.stmts[0]}. Frase dos: ${g.stmts[1]}. Frase tres: ${g.stmts[2]}. ¿Cuál es la mentira?`:`${N(g.teller)}, cuéntanos tres cosas de tu vida: dos verdades y una mentira.`);
+    else if(g.phase==='reveal'){SFX.drum(1.4);say('¡La mentira era la frase '+g.lie+'!',1600);setTimeout(()=>SFX.fanfare(),1500)}}
+  else if(sc==='imita'){if(g.phase==='ready')say(`${N(g.imitator)}, mira tu secreto. Los demás, ¡adivinen a quién imita!`);else if(g.phase==='acting')say('¡Tiempo corriendo!');
+    else if(g.phase==='done'){if(g.guesser){SFX.fanfare();say(`¡Adivinó ${N(g.guesser)}! Era ${g.target}.`)}else{SFX.buzzer();say(`Nadie adivinó. Era ${g.target}.`)}}}
+  else if(sc==='absurdas'){if(g.phase==='write')say('Completen la frase en su celular: '+g.prompt);else if(g.phase==='vote')say('Estas son las respuestas. '+g.order.map((p,i)=>`Respuesta ${i+1}: ${g.texts[p]}.`).join(' ')+' ¡Voten por la más chistosa!');
+    else if(g.phase==='reveal'){const c=countVotes(g);const max=Math.max(0,...Object.values(c));const w=g.order.filter(p=>c[p]===max&&max);SFX.drum(1.4);setTimeout(()=>SFX.fanfare(),1500);say(w.length?'¡Ganó '+w.map(p=>N(p)+', con: '+g.texts[p]).join('; y ')+'!':'Nadie votó.',1600)}}
+  else if(sc==='mimica'){if(g.phase==='playing')say(`Actúa ${N(g.actor)}. ¡A adivinar!`);else if(g.phase==='end'){SFX.buzzer();say(`¡Tiempo! ${g.got.length} puntos para los ${g.team==='a'?'rojos':'azules'}.`)}}
+}
+function sfxTick(now){
+  const R=S.asr;
+  if(S.screen==='asr'&&R&&R.turnEnd&&(R.phase==='play'||R.phase==='final')&&!R.chal){const left=(R.turnEnd-now)/1000;
+    if(left<=0&&lastTimerEnd!==R.turnEnd){lastTimerEnd=R.turnEnd;SFX.buzzer();say('¡Se acabó el tiempo! '+N(R.actor)+', decide ya.')}}
+  const c=R&&R.chal;const end=(S.screen==='asr'&&c&&c.stage==='go'&&c.end)||(S.screen==='mimica'&&S.g.phase==='playing'&&S.g.end);
+  if(end){const left=Math.ceil((end-now)/1000);if(left<=5&&left>0&&left!==lastSecTick){lastSecTick=left;tone(880,.12,'square',.1)}if(left<=0&&lastSecTick!==-end){lastSecTick=-end;SFX.buzzer()}}
+}
+/* --- demo narrada --- */
+const DW=ms=>new Promise((r,j)=>setTimeout(()=>DEMO.stop?j('stop'):r(),ms));
+async function idle(){await DW(300);while(VO.pending>0){await DW(200)}}
+async function dsay(t){await idle();await say(t);if(DEMO.stop)throw 'stop';await DW(400)}
+async function runDemo(){
+  if(DEMO.on)return;hush();DEMO.on=true;DEMO.stop=false;DEMO.real=JSON.stringify(S);
+  S=JSON.parse(JSON.stringify(Object.assign({},DEF,{code:S.code,players:[],castigos:S.castigos})));
+  document.body.classList.add('demo');lastSig=null;render();narrate();
+  const ppl=[['Abuela Tere','🤶',{nick:'La Reina',talent:'Hacer el mejor pan de pascua',food:'Pavo con puré',t1:'Fui reina de la primavera en mi colegio',t2:'Aprendí a manejar a los cincuenta',lie:'Me saqué una foto con el Papa'}],['Tío Pancho','🦌',{nick:'Panchito',talent:'Contar chistes fomes',food:'Cola de mono',t1:'Me perdí en el metro tres horas',t2:'Tengo una colección de llaveros',lie:'Corrí una maratón descalzo'}],['Benja','🦖',{nick:'Benjita',talent:'Dibujar dinosaurios',food:'Helado',t1:'Tengo un diente suelto',t2:'Me sé todos los planetas',lie:'Tengo un perro que habla'}],['JP','🎅',{nick:'El Jefe',talent:'Hacer asados perfectos',food:'Pan de pascua',t1:'Me caí a una piscina con terno',t2:'Sé tocar acordeón',lie:'Conocí a un futbolista en un ascensor'}]];
+  try{
+    await dsay('¡Bienvenidos al Gran Juego del Comando Garra! Soy el relator, y les voy a mostrar cómo se juega.');
+    await dsay('Primero, cada invitado escanea el código QR de la tele con su celular. El celular le hace una entrevista: su apodo, su personaje, su talento oculto, su comida favorita, y en secreto, dos verdades y una mentira.');
+    for(const [i,[n,e,d]] of ppl.entries()){const pid='demo'+i;S.players.push({pid,name:n});render();await DW(500);
+      if(i<2){setProfile(pid,Object.assign({emoji:e},d));await DW(800);await idle();await DW(1500);A.spotClose();await DW(600)}
+      else{Object.assign(P(pid),d,{emoji:e,reg:true});render()}}
+    await dsay('Los que no tienen celular se agregan a mano, y se entrevistan desde la tele. Cuando llegaron todos, se aprieta el botón rojo: ¡Empezar el Gran Juego!');
+    A.go('asr');await DW(1200);
+    await dsay('Se eligen las opciones: tres vueltas, y un regalo congelado a los tres robos. Y se sortea el orden.');
+    A.asrBegin(S.players.map(p=>p.pid),{max:3,secs:60,peaje:false,nchal:2});await DW(3200);await idle();
+    const R=()=>S.asr; const desc=['una taza navideña','una caja de chocolates','unos calcetines de reno','un parlante'];let k=0;
+    const openKeep=async(keep=true)=>{A.asrOpen(null);await DW(900);const gi=R().pending.gi;R().gifts[gi].desc=desc[k++];$('#modal').innerHTML='';save();render();await idle();await say('¡Era '+R().gifts[gi].desc+'!');await DW(700);if(keep){A.asrKeepNew();await DW(600);await idle()}return gi};
+    const g0=await openKeep();
+    await openKeep(false);await dsay('A '+N(R().actor)+' no le gustó, y lo cambia por la taza.');A.asrSteal(g0);await DW(800);await idle();
+    await dsay('Ahora '+N(R().actor)+' prefiere robar.');const opened=R().gifts.map((g,i)=>g.opened&&g.owner!==R().actor?i:-1).filter(i=>i>=0);A.asrSteal(opened[0]);await DW(800);await idle();
+    await openKeep();await openKeep();await DW(800);await idle();
+    const target=()=>R().gifts.map((g,i)=>g.owner!==R().actor&&g.steals<R().max?i:-1).filter(i=>i>=0)[0];
+    A.asrSteal(target());await DW(600);await idle();
+    A.chalSet('quien');await DW(400);await idle();
+    await dsay('Los demás votan en su celular. Miren cómo van llegando los votos.');const c1=R().chal;c1.manual={[c1.thief]:2,[c1.victim]:1};save();render();await DW(1500);
+    A.chalDuelReveal();await DW(2600);await idle();await DW(800);A.chalApply();await DW(800);await idle();
+    A.asrSteal(target());await DW(600);await idle();A.chalSet('dos');await DW(500);await idle();
+    const c2=R().chal;const wrong=['1','2','3'].find(x=>x!==c2.lie);c2.manual={[wrong]:2,[c2.lie]:1};save();render();await DW(1200);
+    A.chalDosReveal();await DW(2600);await idle();await DW(800);A.chalApply();await DW(800);await idle();
+    A.asrSteal(target());await DW(600);await idle();A.chalSet('ruleta');await DW(500);await idle();A.spin();await DW(4700);await idle();await DW(800);A.closeModal(true);await DW(800);await idle();await DW(800);A.chalApply();await DW(800);await idle();
+    await dsay(N(R().actor)+' no quiere arriesgar, y se queda con el suyo.');A.asrKeep();await DW(600);await idle();
+    await dsay('Y así se juega la tercera vuelta, igual que la segunda. Para la demo, nos la saltamos.');VO.mute=true;
+    while(R().phase==='final'){A.asrKeep();await DW(250)}VO.mute=false;await DW(500);await idle();
+    await dsay('Si se equivocan, hay un botón para deshacer. Y si se recarga la página, no se pierde nada. ¡Eso es todo! Aprieten Salir de la demo para jugar de verdad. ¡Feliz Navidad!');
+  }catch(e){if(e!=='stop')console.error(e)}
+  VO.mute=false;
+}
+function endDemo(){DEMO.stop=true;hush();VO.mute=false;if(!DEMO.on)return;DEMO.on=false;S=JSON.parse(DEMO.real);document.body.classList.remove('demo');$('#modal').innerHTML='';lastSig=null;S.screen='lobby';render();narrate()}
 
 /* ---------- red ---------- */
 function startPeer(){
@@ -2499,7 +2654,7 @@ function onData(c,d){
     onAnswer(pid,String(d.key||''),d.val);
   }
 }
-function sendView(pid,view){lastView[pid]=view;const c=conns[pid];if(c&&c.open)try{c.send({t:'view',view})}catch(e){}}
+function sendView(pid,view){if(DEMO.on)return;lastView[pid]=view;const c=conns[pid];if(c&&c.open)try{c.send({t:'view',view})}catch(e){}}
 function broadcast(view,except=[]){globalView=view;S.players.forEach(p=>{if(!except.includes(p.pid))sendView(p.pid,view)})}
 const waitAll=msg=>broadcast({v:'wait',msg:msg||'Mira la pantalla 📺'});
 
@@ -2509,7 +2664,7 @@ function render(){
   if(a&&a.id&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT'))keep={id:a.id,v:a.value,s:a.selectionStart,e:a.selectionEnd};
   $('#app').innerHTML=topbar()+'<div class="wrap">'+(SCREENS[S.screen]||SCREENS.lobby)()+'</div>';
   if(keep){const n=document.getElementById(keep.id);if(n){n.value=keep.v;n.focus();try{n.setSelectionRange(keep.s,keep.e)}catch(e){}}}
-  tick();
+  tick();try{narrate()}catch(e){console.error(e)}
 }
 function topbar(){
   const on=S.players.filter(p=>online(p.pid)).length;
@@ -2518,6 +2673,9 @@ function topbar(){
   <span class="sp"></span>
   <span class="pill">Sala <b style="color:var(--gold)">${esc(S.code)}</b></span>
   <span class="pill"><span class="dot ${on?'on':''}"></span>${on}/${S.players.length} celulares</span>
+  ${DEMO.on?'<button class="b-red" onclick="A.endDemo()">⏹ Salir de la demo</button>':''}
+  <button class="b-ghost" onclick="A.toggleVO()" title="Relator">${VO.on?'🔊':'🔇'} Relator</button>
+  <button class="b-ghost" onclick="A.toggleSFX()" title="Efectos de sonido">${VO.sfx?'🎵':'🚫'} Efectos</button>
   <button class="b-ghost" onclick="A.fs()" title="Pantalla completa">⛶</button></div>`;
 }
 const header=(e,t,rules)=>`<div class="row" style="justify-content:space-between"><h1>${e} ${t}</h1></div>${rules?`<details><summary>Cómo se juega</summary><ul class="rules">${rules.map(r=>'<li>'+r+'</li>').join('')}</ul></details>`:''}`;
@@ -2552,7 +2710,8 @@ function showSpot(){if($('#modal').innerHTML||!spotQ.length)return;const pid=spo
   <div style="margin:10px 0">${av(pid,'6em')}</div><p class="huge">${esc(p.name)}</p>${p.nick?`<p class="prompt" style="font-size:1.6em">alias "<span style="color:var(--gold)">${esc(p.nick)}</span>"</p>`:''}
   ${p.talent?`<p style="font-size:1.3em">🌟 Talento oculto: <b>${esc(p.talent)}</b></p>`:''}${p.food?`<p style="font-size:1.3em">🍗 Su comida navideña favorita: <b>${esc(p.food)}</b></p>`:''}
   <button class="b-gold big" onclick="A.spotClose()">👏 ¡Un aplauso!</button></div></div>`;
-  clearTimeout(spotTimer);spotTimer=setTimeout(()=>{if($('#modal .spot'))A.spotClose()},12000)}
+  SFX.applause(2.5);say(`Damas y caballeros, con ustedes: ${p.name}${p.nick?', alias '+p.nick:''}. ${p.talent?'Su talento oculto: '+p.talent+'.':''} ${p.food?'Su comida navideña favorita: '+p.food+'.':''} ¡Un aplauso!`);
+  clearTimeout(spotTimer);spotTimer=setTimeout(()=>{if($('#modal .spot'))A.spotClose()},15000)}
 const EMOJIS=['🎅','🤶','🦌','⛄','🎄','🌟','🐧','🐻','🦊','🐱','🐶','🐵','🦁','🐸','🦄','🐙','🦖','🤖','👽','🥳','😎','🤠','🧙','🦸'];
 
 /* ---------- pantallas ---------- */
@@ -2577,7 +2736,7 @@ SCREENS.lobby=()=>{
       ${p.reg?`<button class="b-ghost" style="padding:.3em .6em;font-size:.85em" onclick="A.spot('${p.pid}')">🎤 Presentar</button>`:`<button class="b-ghost" style="padding:.3em .6em;font-size:.85em" onclick="A.interview('${p.pid}')">📝 Entrevistar</button>`}</div>`).join('')||'<p class="muted">Todavía no llega nadie. ¡Escaneen el QR!</p>'}</div>
     <div class="row" style="margin-top:12px"><input id="newp" placeholder="Agregar invitado sin celular" maxlength="24" onkeydown="if(event.key==='Enter')A.addP()"><button onclick="A.addP()">Agregar</button></div>
   </div></div>
-  <div class="center" style="margin:22px 0"><button class="b-red big" style="font-size:1.6em;padding:.8em 1.6em" onclick="A.go('asr')">🎁 ¡Empezar el Gran Juego!</button><p class="muted">Amigo Secreto Robado en 3 vueltas, con desafíos de todos los juegos.</p></div>
+  <div class="center" style="margin:22px 0"><button class="b-red big" style="font-size:1.6em;padding:.8em 1.6em" onclick="A.go('asr')">🎁 ¡Empezar el Gran Juego!</button><p class="muted">Amigo Secreto Robado en 3 vueltas, con desafíos de todos los juegos.</p><button class="b-ghost" onclick="A.demo()">🎬 Ver demo con relator</button></div>
   <details><summary>🎲 Juegos sueltos y puntos</summary>
   <div class="grid g3" style="margin-top:10px">
    ${[['quien','🤔','¿Quién es más probable…?','Votan en secreto y se revela con nombres'],['ruleta','🎡','Ruleta del castigo','Penitencias para los que pierden'],['dos','🕵️','Dos verdades y una mentira','Descubran la mentira'],['imita','🎭','Imitaciones','Adivina a quién imita'],['absurdas','🤪','Respuestas absurdas','Completa la frase más chistosa'],['mimica','🙌','Mímica a la carrera','Equipos contra el reloj']].map(([k,e,t,d])=>`<button class="gamebtn" onclick="A.go('${k}')"><span class="e">${e}</span><span class="t">${t}</span><span class="d">${d}</span></button>`).join('')}
@@ -2819,7 +2978,7 @@ function openWheel(title,pid,after,onFail){
 /* ---------- temporizadores ---------- */
 function fmt(s){s=Math.max(0,Math.ceil(s));return s>=60?Math.floor(s/60)+':'+String(s%60).padStart(2,'0'):String(s)}
 function tick(){
-  const now=Date.now();
+  const now=Date.now();try{sfxTick(now)}catch(e){}
   const im=$('#imtimer'); if(im&&S.g.start) im.textContent=Math.floor((now-S.g.start)/1000)+'s';
   const ct=$('#chtimer'),C=S.asr&&S.asr.chal; if(ct&&C&&C.end){const left=(C.end-now)/1000;ct.textContent=left>0?fmt(left):'⏰ ¡Tiempo!';ct.classList.toggle('low',left<=10);if(left<=0&&C.game==='mimica'&&C.stage==='go')A.chalEnd(false)}
   const mm=$('#mmtimer'); if(mm&&S.g.end){const left=(S.g.end-now)/1000;mm.textContent=fmt(left);mm.classList.toggle('low',left<=10);if(left<=0&&S.g.phase==='playing')A.mEnd()}
@@ -2844,10 +3003,13 @@ const A=window.A={
     const target=360-((i+.5)*seg)+jitter;
     wheelRot=wheelRot-(((wheelRot%360)+360)%360)+360*6+target;
     const svg=$('#modal .wheel'); $('#spinbtn').disabled=true;
-    svg.style.transform=`rotate(${wheelRot}deg)`;
-    setTimeout(()=>{$('#wres').innerHTML=`<div class="result">${esc(items[i][0])} ${esc(items[i][1])}</div>`;
+    svg.style.transform=`rotate(${wheelRot}deg)`;SFX.wheel();
+    setTimeout(()=>{$('#wres').innerHTML=`<div class="result">${esc(items[i][0])} ${esc(items[i][1])}</div>`;SFX.chime();say(items[i][1]+'.');
       $('#wbtns').innerHTML=modalFail?`<button class="b-ok big" onclick="A.closeModal(true)">✅ Superó la prueba</button><button class="b-red big" onclick="A.closeModal('fail')">❌ No la superó</button>`:`<button class="b-ok big" onclick="A.closeModal(true)">✅ ${modalAfter?'Cumplió, seguir':'Listo'}</button><button class="b-ghost" onclick="A.spin()">Girar de nuevo</button>`;},4300);
   },
+  toggleVO(){VO.on=!VO.on;store.set('cg_vo',VO.on);if(!VO.on)hush();else say('Hola, soy el relator del Comando Garra.');render()},
+  toggleSFX(){VO.sfx=!VO.sfx;store.set('cg_sfx',VO.sfx);if(VO.sfx)SFX.chime();render()},
+  demo(){runDemo()}, endDemo(){endDemo()},
   spotClose(){clearTimeout(spotTimer);$('#modal').innerHTML='';showSpot()},
   spot(pid){spotQ.push(pid);showSpot()},
   interview(pid){const p=P(pid)||{};const f=(id,l,v,ph)=>`<label style="display:block;text-align:left;margin:6px 0">${l}<input id="iv_${id}" value="${esc(v||'')}" placeholder="${ph||''}" style="width:100%"></label>`;
@@ -2922,7 +3084,8 @@ const A=window.A={
   asrSnap(){S.asrHist.push(JSON.stringify(S.asr));if(S.asrHist.length>40)S.asrHist.shift()},
   asrStart(){
     const sel=[...document.querySelectorAll('.asrp:checked')].map(i=>i.value);if(sel.length<3){alert('Se necesitan al menos 3 participantes');return}
-    const max=+$('#amax').value,secs=+$('#asecs').value,peaje=$('#apeaje').checked,nchal=+$('#achal').value;
+    A.asrBegin(sel,{max:+$('#amax').value,secs:+$('#asecs').value,peaje:$('#apeaje').checked,nchal:+$('#achal').value})},
+  asrBegin(sel,{max,secs,peaje,nchal}){
     const order=shuffle(sel);
     S.asr={phase:'shuffle',sel,order,max,secs,peaje,nchal,round:1,r2:0,chal:null,gifts:sel.map(()=>({opened:false,owner:null,steals:0,desc:''})),turnIdx:0,actor:order[0],blocked:null,log:[],turnEnd:0};S.asrHist=[];save();render();
     let k=0;const names=sel.map(nm);const iv=setInterval(()=>{const e=$('#shuf');if(e)e.textContent=names[k++%names.length];},90);
@@ -2991,9 +3154,9 @@ const A=window.A={
     broadcast({v:'vote',key:c.vkey,prompt:'¿Cuál es la más chistosa?',options:c.order.map((p,i)=>({id:p,label:'AB'[i]+'. '+c.texts[p]}))},[c.thief,c.victim]);
     [c.thief,c.victim].forEach(p=>sendView(p,{v:'wait',msg:'🤪 La mesa está votando…'}));save();render()},
   chalDosReveal(){const c=S.asr.chal;const v=countVotes(c);const total=Object.values(v).reduce((a,b)=>a+b,0);const ok=v[c.lie]||0;
-    c.note='La mentira era la '+c.lie+(c.stmts?': "'+esc(c.stmts[+c.lie-1])+'"':'')+'. La descubrieron '+ok+' de '+total+'.';A.chalEnd(ok*2<=total)},
+    c.note='La mentira era la '+c.lie+(c.stmts?': "'+esc(c.stmts[+c.lie-1])+'"':'')+'. La descubrieron '+ok+' de '+total+'.';SFX.drum(1.3);say('La mentira era la frase '+c.lie+'.');setTimeout(()=>A.chalEnd(ok*2<=total),1400)},
   chalDuelReveal(){const c=S.asr.chal;const v=countVotes(c);const a=v[c.thief]||0,b=v[c.victim]||0;
-    c.note=esc(nm(c.thief))+': '+a+' votos · '+esc(nm(c.victim))+': '+b+' votos'+(a===b?' (empate: gana el dueño)':'');A.chalEnd(a>b)},
+    c.note=esc(nm(c.thief))+': '+a+' votos · '+esc(nm(c.victim))+': '+b+' votos'+(a===b?' (empate: gana el dueño)':'');SFX.drum(1.3);setTimeout(()=>A.chalEnd(a>b),1400)},
   chalEnd(pass){const c=S.asr.chal;if(!c||c.stage==='result')return;c.pass=!!pass;c.stage='result';$('#modal').innerHTML='';
     waitAll(pass?'✅ ¡'+nm(c.thief)+' ganó el desafío!':'❌ '+nm(c.thief)+' no lo logró');save();render()},
   chalApply(){const R=S.asr,c=R.chal;if(!c)return;const T=c.thief,g=R.gifts[c.gi];
